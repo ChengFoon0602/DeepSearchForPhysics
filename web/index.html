@@ -428,7 +428,8 @@ async function submitDecision(decision){
   try{
     await fetch('/api/approve', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ thread_id: threadId, decision })
+      /* HITL middleware 期望 resume 值是 {"decisions": [...]}，单个决策必须包进 decisions 数组 */
+      body: JSON.stringify({ thread_id: threadId, decision: { decisions: [decision] } })
     });
   }catch(e){ addEv('ERR', '提交审批失败：' + e.message, 'err'); }
 }

@@ -14,7 +14,10 @@ except ImportError:
 def convert_md_to_pdf_via_word(md_abs_path: Path, pdf_abs_path: Path) -> str:
     """
     使用 Microsoft Word COM 接口将 Markdown 转换为 PDF。
-    依赖：pywin32, markdown
+    依赖：pywin32, markdown。
+
+    注意：Word COM 从 HTML 导入时不加载 <img>（外部路径和 data URI 都不行，已实测），
+    所以 md 里的 $...$ 公式会以源文本显示。需要公式排版请用 Markdown / Word 而非 PDF。
     """
     temp_html_path = md_abs_path.with_suffix('.temp.html')
     word_app = None

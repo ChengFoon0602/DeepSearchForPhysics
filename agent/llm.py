@@ -8,5 +8,7 @@ load_dotenv(find_dotenv())
 
 model = init_chat_model(
     model=os.getenv("LLM_QWEN_MAX"),
-    model_provider="openai"
+    model_provider="openai",
+    max_retries=3,   # 上游瞬断（RemoteDisconnected/Timeout）自动重试，学习日记问题 5
+    timeout=60,      # HTTP 超时 60s，长检索任务不轻易被打断
 )

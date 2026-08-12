@@ -150,6 +150,35 @@
   .deep-toggle input:checked + .bar{background:var(--accent)}
   .deep-toggle input:checked + .bar::after{transform:translateX(14px)}
 
+  /* 人工审批卡片：生成报告前等待用户确认 */
+  .approval{
+    margin:10px 0 10px auto;max-width:78%;background:var(--card);
+    border:1px solid var(--line);border-left:3px solid var(--accent);
+    border-radius:6px;padding:12px 14px;box-shadow:var(--shadow);
+  }
+  .approval h4{margin:0 0 6px;font-size:14px;color:var(--accent);letter-spacing:.05em}
+  .approval .a-desc{font-size:12.5px;color:var(--ink-soft);margin-bottom:8px}
+  .approval .a-preview{
+    max-height:180px;overflow:auto;background:var(--paper);
+    border:1px solid var(--line);border-radius:4px;padding:8px;
+    font-size:12.5px;line-height:1.6;white-space:pre-wrap;color:var(--ink);
+    margin-bottom:10px;
+  }
+  .approval .a-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .approval .a-actions input{
+    flex:1;min-width:140px;background:transparent;border:none;border-bottom:1px solid rgba(28,39,51,.3);
+    font-family:var(--serif);font-size:12.5px;color:var(--ink);padding:4px 2px;outline:none;
+  }
+  .approval .a-actions button{
+    font-family:var(--serif);font-size:12.5px;border:1px solid var(--line);border-radius:3px;
+    padding:5px 14px;cursor:pointer;background:var(--card);color:var(--ink);letter-spacing:.1em;
+    transition:background .2s;
+  }
+  .approval .a-actions .ok{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+  .approval .a-actions .ok:hover{background:var(--accent)}
+  .approval .a-actions .no:hover{background:#e8ded0}
+  .approval .a-actions button:disabled{opacity:.5;cursor:not-allowed}
+
   @keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
   @keyframes stamp{from{opacity:0;transform:translateX(-6px)}to{opacity:1;transform:none}}
   @keyframes blink{0%,49%{opacity:1}50%,100%{opacity:0}}
@@ -201,6 +230,10 @@
       <label class="deep-toggle" title="开启后网络搜索走完整深度检索循环（多角度检索→精读→补检索→带来源汇总），耗时与 API 消耗更高；关闭则浅层单轮检索，省钱">
         <input type="checkbox" id="deep">
         <span class="bar"></span>深度调研
+      </label>
+      <label class="deep-toggle" title="开启后生成 Markdown 报告前需要人工审批（通过/驳回）；关闭则直接生成">
+        <input type="checkbox" id="hitl" checked>
+        <span class="bar"></span>报告审批
       </label>
       <button id="send">发送</button>
     </div>
@@ -305,6 +338,16 @@ function connectWS(id){
       addMsg('agent', d.data.result || '（无内容）', renderReply(d.data.result || '（无内容）'));
       loadFiles();
     }
+    else if (ev === 'approval_required'){
+      /* 生成报告前的人工审批：显示报告预览，等待用户通过/驳回 */
+      const reqs = d.data.requests || [];
+      const r = reqs[0] || {};
+      const args = r.args || {};
+      setStatus('等待人工审批');
+      addEv('HITL', '等待审批：' + (args.filename || r.name || '报告'));
+      addApprovalCard(args.filename || '未命名报告', args.content || '', r.description || '');
+      if (watchdogTimer){ clearTimeout(watchdogTimer); watchdogTimer = null; }  /* 审批期间不触发 5 分钟看门狗 */
+    }
     else if (ev === 'error'){
       setStatus('异常');
       finish();
@@ -352,6 +395,43 @@ function addThinking(){
   chat.scrollTop = chat.scrollHeight;
   return div;
 }
+/* 人工审批卡片：内容一律用 textContent 构建，避免把模型输出当 HTML 注入 */
+function addApprovalCard(filename, content, desc){
+  const card = document.createElement('div');
+  card.className = 'approval';
+  const h = document.createElement('h4');
+  h.textContent = '✋ 等待审批：' + filename;
+  const d = document.createElement('div');
+  d.className = 'a-desc';
+  d.textContent = (desc || '即将生成 Markdown 报告') + '（全文 ' + content.length + ' 字）';
+  const pre = document.createElement('div');
+  pre.className = 'a-preview';
+  pre.textContent = content.length > 1500 ? content.slice(0, 1500) + '\n……[内容过长已截断，通过后写入完整版]' : content;
+  const acts = document.createElement('div');
+  acts.className = 'a-actions';
+  const inp = document.createElement('input');
+  inp.placeholder = '驳回理由（可选）';
+  const ok = document.createElement('button');
+  ok.className = 'ok'; ok.textContent = '通过';
+  const no = document.createElement('button');
+  no.className = 'no'; no.textContent = '驳回';
+  const disable = () => { ok.disabled = true; no.disabled = true; inp.disabled = true; ok.textContent = '已提交'; };
+  ok.onclick = () => { submitDecision({type:'approve'}); disable(); };
+  no.onclick = () => { submitDecision({type:'reject', message: inp.value.trim() || '用户驳回报告，请修改后重试'}); disable(); };
+  acts.appendChild(inp); acts.appendChild(ok); acts.appendChild(no);
+  card.appendChild(h); card.appendChild(d); card.appendChild(pre); card.appendChild(acts);
+  chat.appendChild(card);
+  chat.scrollTop = chat.scrollHeight;
+}
+async function submitDecision(decision){
+  if (!threadId) return;
+  try{
+    await fetch('/api/approve', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ thread_id: threadId, decision })
+    });
+  }catch(e){ addEv('ERR', '提交审批失败：' + e.message, 'err'); }
+}
 async function send(){
   const q = input.value.trim();
   if (!q || busy) return;
@@ -371,7 +451,7 @@ async function send(){
   try{
     const r = await fetch('/api/task', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ query:q, thread_id:tid, deep_research: $('#deep').checked })
+      body: JSON.stringify({ query:q, thread_id:tid, deep_research: $('#deep').checked, hitl: $('#hitl').checked })
     });
     const j = await r.json();
     threadId = j.thread_id || tid;

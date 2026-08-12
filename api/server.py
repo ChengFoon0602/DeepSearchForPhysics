@@ -42,6 +42,12 @@ class TaskRequest(BaseModel):
     query: str
     thread_id: str = None
     deep_research: bool = False  # 前端「深度调研」开关：True=完整深度检索循环，False=浅层单轮（省钱）
+    hitl: bool = False  # 前端「报告审批」开关：True=生成报告前等人工审批，False=自动批准
+
+
+class ApproveRequest(BaseModel):
+    thread_id: str
+    decision: dict  # HITL Decision：{"type":"approve"} / {"type":"reject","message":...} / {"type":"edit","edited_action":{...}}
 
 @app.on_event("startup")
 async def startup_event():
@@ -61,10 +67,34 @@ async def run_task(request: TaskRequest):
 
     # 2. [后台执行] 异步运行 Agent，不阻塞主线程
     # 注意：这里简单的使用 asyncio.create_task 触发，由 main_agent 内部负责实时推送
-    asyncio.create_task(run_deep_agent(request.query, thread_id, deep_research=request.deep_research))
+    # hitl 开关 → auto_approve 取反：开=等审批，关=自动批准（旧行为）
+    asyncio.create_task(run_deep_agent(
+        request.query, thread_id,
+        deep_research=request.deep_research,
+        auto_approve=not request.hitl,
+    ))
 
     # 3. [立即响应]
     return {"status": "started", "thread_id": thread_id}
+
+
+@app.post("/api/approve")
+async def approve_task(request: ApproveRequest):
+    """
+    人工审批接口 (Human Approval)。
+
+    前端在收到 `approval_required` 事件后，用户点了通过/驳回/编辑，
+    POST 到这里唤醒后台等待审批的 run_deep_agent。
+    decision 必须是 HITL Decision 格式：
+      {"type": "approve"}
+      {"type": "reject", "message": "理由"}
+      {"type": "edit", "edited_action": {"name": "generate_markdown", "args": {...}}}
+    """
+    from agent.main_agent import resolve_approval
+    ok = resolve_approval(request.thread_id, request.decision)
+    if not ok:
+        return {"status": "error", "message": "该 thread 不在等待审批（可能已超时或任务已结束）"}
+    return {"status": "approved", "thread_id": request.thread_id}
 
 
 @app.post("/api/upload")

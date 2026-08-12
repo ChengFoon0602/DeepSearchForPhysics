@@ -140,8 +140,9 @@ def check_case(case, thread_id, rec):
             failures.append(f"未调度子智能体: {name}")
 
     # 2. 生成文件 + 分隔符检查（对所有 .md 都扫，无论 expect_file）
-    session_dir = ROOT / "output" / f"session_{thread_id}"
-    md_files = sorted(session_dir.rglob("*.md"))
+    # 目录名现在是 session_{时间戳}_{thread前6位}，直接用 monitor 上报的 session_dir（真实路径），别重建
+    session_dir = Path(rec.session_dir) if rec.session_dir else (ROOT / "output" / f"session_{thread_id}")
+    md_files = sorted(session_dir.rglob("*.md")) if session_dir.exists() else []
     if case.get("expect_file", False) and not md_files:
         failures.append("未生成任何 .md 文件")
     for f in md_files:
@@ -173,10 +174,10 @@ async def run_suite(cases, retries):
     必须共用一个循环：get_main_agent() 只构建一次并缓存在全局，
     AsyncSqliteSaver 连接绑定在首个循环上，换循环会报
     "coroutine attached to a different event loop"。"""
-    results = {}  # id -> (passed, failures, attempts, thread_id)
+    results = {}  # id -> (passed, failures, attempts, pass_session_dir)
     for case in cases:
         cid = case["id"]
-        passed, failures, attempts, pass_thread = False, [], 0, None
+        passed, failures, attempts, pass_session = False, [], 0, None
         for attempt in range(1 + retries):
             attempts += 1
             print(f"\n▶ [{cid}] 第 {attempt + 1} 次尝试（thread 全新）...")
@@ -188,11 +189,11 @@ async def run_suite(cases, retries):
             print(f"  调度子智能体: {dispatched}")
             print(f"  调用工具: {tool_counts}")
             if not failures:
-                passed, pass_thread = True, thread_id
+                passed, pass_session = True, rec.session_dir
                 print("  PASS")
                 break
             print(f"  失败项: {'; '.join(failures)}")
-        results[cid] = (passed, failures, attempts, pass_thread)
+        results[cid] = (passed, failures, attempts, pass_session)
     return results
 
 
@@ -233,13 +234,13 @@ def main():
     print("=" * 70)
     all_pass = True
     cleaned = 0
-    for cid, (passed, failures, attempts, pass_thread) in results.items():
+    for cid, (passed, failures, attempts, pass_session) in results.items():
         tag = "PASS" if passed else "FAIL"
         all_pass &= passed
         detail = "、".join(failures) if failures else "OK"
         print(f"  [{tag}] {cid:20s} (尝试 {attempts} 次)  {detail}")
-        if args.clean and passed and pass_thread:
-            dir_ = ROOT / "output" / f"session_{pass_thread}"
+        if args.clean and passed and pass_session:
+            dir_ = Path(pass_session)
             if dir_.exists():
                 shutil.rmtree(dir_)
                 cleaned += 1

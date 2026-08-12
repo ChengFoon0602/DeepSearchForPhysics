@@ -4,6 +4,7 @@ from agent.subagents.network_search_agent import network_search_agent
 from agent.subagents.physics_lit_agent import physics_lit_agent
 import asyncio
 import aiosqlite
+import datetime
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 # main_agent tool导入
@@ -25,6 +26,7 @@ from pathlib import Path
 from api.context import set_session_context, reset_session_context, set_thread_context
 
 from langchain_core.messages import AIMessage
+from langgraph.types import Command
 
 # SQLite 持久化检查点：对话历史落盘到 output/checkpoints.sqlite，服务器重启不丢
 # 图以 astream() 异步执行，必须用 AsyncSqliteSaver。但它的 __init__ 会调用
@@ -36,9 +38,47 @@ DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 _main_agent = None
 _agent_lock = asyncio.Lock()
 
+# ---- 人工审批（HITL）----
+# 审批锚点：generate_markdown（生成报告的唯一入口）。主智能体调它前必被 HumanInTheLoopMiddleware 拦截。
+# interrupt_on 的 description 支持动态 callable：(tool_call, state, runtime) -> str
+def _hitl_description(tool_call, state, runtime):
+    """生成审批请求的中文描述：即将生成的报告文件名 + 字数。"""
+    args = tool_call.get("args", {}) or {}
+    filename = args.get("filename", "(未命名)")
+    content = args.get("content", "") or ""
+    return f"即将生成报告「{filename}」（{len(content)} 字）。请审批是否允许落盘。"
+
+# 每个等待审批的 thread 对应一个 asyncio.Future（由 /api/approve set_result）
+_approval_futures: dict[str, asyncio.Future] = {}
+APPROVAL_TIMEOUT = 300  # 秒：人类 5 分钟不审批 → 自动取消任务
+
+
+async def wait_for_approval(thread_id: str) -> dict:
+    """等待 /api/approve 的人类决策（超时自动取消并清理）。"""
+    fut = asyncio.get_running_loop().create_future()
+    _approval_futures[thread_id] = fut
+    try:
+        return await asyncio.wait_for(fut, timeout=APPROVAL_TIMEOUT)
+    finally:
+        _approval_futures.pop(thread_id, None)
+
+
+def resolve_approval(thread_id: str, decision: dict) -> bool:
+    """/api/approve 调用：set_result 唤醒等待中的 run_deep_agent。返回是否找到。"""
+    fut = _approval_futures.get(thread_id)
+    if fut is None or fut.done():
+        return False
+    fut.set_result(decision)
+    return True
+
 
 async def get_main_agent():
-    """懒构建主智能体（AsyncSqliteSaver 需要 running loop，故推迟到异步上下文）。"""
+    """懒构建主智能体（AsyncSqliteSaver 需要 running loop，故推迟到异步上下文）。
+
+    恒带 HITL middleware：generate_markdown 前必中断。中断后如何处理由
+    run_deep_agent 决定——auto_approve=True 自动批准（等价旧行为），
+    auto_approve=False 等待人类审批（前端「报告审批」开关）。
+    """
     global _main_agent
     if _main_agent is None:
         async with _agent_lock:
@@ -49,6 +89,12 @@ async def get_main_agent():
                     system_prompt=main_agent_content['system_prompt'],
                     tools=[generate_markdown, convert_md_to_pdf, read_file_content],
                     checkpointer=AsyncSqliteSaver(conn),
+                    interrupt_on={
+                        "generate_markdown": {
+                            "allowed_decisions": ["approve", "edit", "reject"],
+                            "description": _hitl_description,
+                        }
+                    },
                     subagents=[
                         database_query_agent,
                         network_search_agent,
@@ -76,19 +122,23 @@ project_root_path = Path(__file__).parents[1].resolve() # 绝对 解析路径标
 # main_agent.invoke()
 # main_agent.stream()
 # main_agent.astream() [选他]
-async def run_deep_agent(task_query, session_id, deep_research=False):
+async def run_deep_agent(task_query, session_id, deep_research=False, auto_approve=True):
     """
     定义流式+异步执行主智能体！！
     执行过程中，返回  会话文件化返回  调用子智能体  调用最终结果 （monitor）
     task_query: 前端提问的问题
     session_id: 每个前端会话对应的标识 （1.存储session_id ContextVars 2.session_id 给他创建对应的output输出地址）
     deep_research: 前端「深度调研」开关。True=主智能体把网络搜索委托为完整深度检索循环；False=浅层单轮（省钱）
+    auto_approve: True=生成报告前自动批准（评测/未开审批开关）；False=等前端「报告审批」（/api/approve 唤醒）
     """
     print(f"当前会话的main_agent开始执行了！ 会话id:{session_id}")
     # 准备工作 【1. session_dir（前端） 2. relative_session_dir (大模型) 3. 上传的文件拼接上传文件专属提示词】
-    # project_root_path / output / session_session_id(uuid)
-    # 当前会话存储生成文件的专属文件夹
-    session_dir = project_root_path / "output" / f"session_{session_id}"
+    # project_root_path / output / session_{YYYYMMDD_HHMM}_{thread前6位}
+    # 目录命名规范：任务开始前无法预知内容，用"时间戳 + thread 短 id"区分新旧与归属。
+    #   同一 thread 续接时短 id 不变 → 目录可复用；时间戳让 output/ 一眼看出哪些是旧的、可清理。
+    session_ts = datetime.datetime.now().strftime("%Y%m%d_%H%M")
+    session_short = str(session_id)[:6]
+    session_dir = project_root_path / "output" / f"session_{session_ts}_{session_short}"
     # 文件夹可能没有，第一次请求要创建
     session_dir.mkdir(parents=True, exist_ok=True)
     # \  \n \t -> /
@@ -96,7 +146,7 @@ async def run_deep_agent(task_query, session_id, deep_research=False):
     # 获取相对文件夹
     # session_dir : project_root_path / output / session_session_id(uuid)
     # project_root_path : project_root_path
-    # relative_session_dir_str: / output / session_session_id(uuid)
+    # relative_session_dir_str: / output / session_时间戳_短id
     relative_session_dir_str = str(session_dir.relative_to(project_root_path)).replace("\\","/")
 
     #处理上传文件 （updated / session_session_id）
@@ -154,39 +204,71 @@ async def run_deep_agent(task_query, session_id, deep_research=False):
     try:
         # 执行（懒构建 main_agent：AsyncSqliteSaver 需在事件循环内构造）
         agent = await get_main_agent()
-        async for chunk in agent.astream({
+
+        # 首轮输入：用户消息（后续轮是 Command(resume=审批决策)）
+        graph_input = {
             "messages":[
                 {
                     "role":"user","content":task_query + path_instruction + mode_instruction
                 }
             ]
-        },config=config):
-            # {"model [大模型决定调用工具 子智能体  最终结果] / tools" : {messages:[xxx...]}}
-            for node_name,state in chunk.items():
-                if not state or "messages" not in state: continue
-                messages = state["messages"]
-                if messages and isinstance(messages,list):
-                    last_msg = messages[-1]
-                    if node_name == 'model':
-                        if last_msg.tool_calls:
-                            # 工具和子智能体
-                            for tool_call in last_msg.tool_calls:
-                                """
-                                  tool_call = {
-                                      name: task
-                                      args:{
-                                          subagent_type:子智能体的名字
-                                          description:子智能体的描述
+        }
+
+        # 多段执行：generate_markdown 前会中断（HITL），中断后等审批再 resume，直到正常结束
+        while True:
+            interrupted = None  # 本轮是否发生审批中断
+            async for chunk in agent.astream(graph_input, config=config):
+                # {"model [大模型决定调用工具 子智能体  最终结果] / tools" : {messages:[xxx...]}}
+                for node_name, state in chunk.items():
+                    if node_name == "__interrupt__":
+                        # HITL 中断：state[0].value 是 HITLRequest（含待审工具调用的 name/args/description）
+                        interrupted = state[0].value
+                        break
+                    if not state or "messages" not in state: continue
+                    messages = state["messages"]
+                    if messages and isinstance(messages,list):
+                        last_msg = messages[-1]
+                        if node_name == 'model':
+                            if last_msg.tool_calls:
+                                # 工具和子智能体
+                                for tool_call in last_msg.tool_calls:
+                                    """
+                                      tool_call = {
+                                          name: task
+                                          args:{
+                                              subagent_type:子智能体的名字
+                                              description:子智能体的描述
+                                          }
                                       }
-                                  }                                
-                                """
-                                if tool_call['name'] == 'task':
-                                    # 调用某个子智能体
-                                    monitor.report_assistant(tool_call['args']['subagent_type'],{'description':tool_call['args']['description']})
-                        elif last_msg.content:
-                            # 最终结果
-                            print(f"主智能体执行结果，最终结果：{last_msg.content[:100]}")
-                            monitor.report_task_result(last_msg.content)
+                                    """
+                                    if tool_call['name'] == 'task':
+                                        # 调用某个子智能体
+                                        monitor.report_assistant(tool_call['args']['subagent_type'],{'description':tool_call['args']['description']})
+                            elif last_msg.content:
+                                # 最终结果
+                                print(f"主智能体执行结果，最终结果：{last_msg.content[:100]}")
+                                monitor.report_task_result(last_msg.content)
+
+            if interrupted is None:
+                break  # 正常结束，无审批中断
+
+            # ---- 生成报告前审批 ----
+            if auto_approve:
+                # 自动批准（评测 / 前端开关关闭）：行为等价旧版，报告直接落盘
+                decision = {"decisions": [{"type": "approve"}]}
+            else:
+                # 等人类审批：把待审信息推给前端，/api/approve 唤醒
+                requests = interrupted.get("action_requests", []) if isinstance(interrupted, dict) else []
+                monitor._emit(
+                    "approval_required",
+                    "等待人工审批报告",
+                    {"thread_id": session_id, "requests": requests},
+                )
+                print(f"[HITL] 等待审批 thread={session_id}")
+                decision = await wait_for_approval(session_id)  # 超时抛 TimeoutError → 走 except
+
+            # resume：同一 config（thread_id）继续执行，决策进入 interrupted 的分支
+            graph_input = Command(resume=decision)
 
     except Exception as e :
         # 报错推送错误信息给前端

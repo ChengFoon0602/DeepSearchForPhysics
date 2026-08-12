@@ -43,9 +43,10 @@ DB / RAGFlow 的 key **不填**（对应服务未配置，子智能体虽注册�
 | `api/context.py` | ContextVar 协程级数据隔离 |
 | `tools/*.py` | 工具（tavily / markdown / pdf / 文件读取） |
 | `web/index.html` | 前端聊天页（KaTeX + marked 渲染） |
+| `reports/` | **报告留档**：有价值的生成报告归档处（人工拷贝，不进 session） |
 | `eval/` | **评测回归**：`run_eval.py` + `cases.yml`（见「评测」节） |
 | `output/checkpoints.sqlite` | 对话检查点（SqliteSaver），跨重启持久化 |
-| `学习日记.md` | **12 个问题的完整排查记录**，改代码前先看 |
+| `学习日记.md` | **18 个问题的完整排查记录**，改代码前先看 |
 
 ## 评测（回归）
 
@@ -75,7 +76,9 @@ python -m eval.run_eval --clean          # 清理通过 case 的 session 目录
 7. **首次跑 ingest 会从 HuggingFace 下载 bge-small-zh 模型 ~90MB**，需一次网络（虚拟网卡）；下载后缓存在本地，之后完全离线。下载失败可设 `HF_ENDPOINT=https://hf-mirror.com` 换镜像。
 8. 新增/修改 `kb/docs/` 下的文档后，要重跑 ingest 才会生效（重跑=清空重建，幂等）。
 9. **重启服务器要连 worker 一起杀**：`python -m api.server` 是 uvicorn reloader+worker 双进程，只 `taskkill` reloader 会留下孤儿 worker 占着 8000 端口、新 prompt 不生效。定位：`Get-CimInstance Win32_Process -Filter "Name='python.exe'"` 看 CommandLine/ParentProcessId，把 worker 一起 `Stop-Process -Force`。
-10. 全部坑 + 排查方法论：见 `学习日记.md`。
+10. **`output/` 是运行时数据**：`session_*` 目录按 `session_{YYYYMMDD_HHMM}_{thread前6位}` 命名（时间戳区分新旧、短 id 关联线程），每个只放本次任务生成的文件，**可整目录删除**；`checkpoints.sqlite` 存旧线程对话记忆（线程级隔离，新会话用不到），会随评测/跑任务无限膨胀到上百 MB——定期删除（先确认没有进程占用，`rm: Device or resource busy` 说明有 eval/server 进程还连着）。要留的报告拷到 `reports/`。
+11. **HITL 人工审批**：前端「报告审批」开关开时，生成 Markdown 前图会中断等审批（`POST /api/approve` 唤醒）；关 = 自动批准。审批等待 5 分钟超时自动取消任务。评测走 auto_approve，不等审批。
+12. 全部坑 + 排查方法论：见 `学习日记.md`。
 
 ## 当前状态
 
@@ -83,5 +86,5 @@ python -m eval.run_eval --clean          # 清理通过 case 的 session 目录
 - 深度循环 prompt 在 `prompt/prompts.yml` 的 `sub_agents.tavily.system_prompt`（工具 `internet_search` + `extract_web_content`）。
 - 生成文件落盘前会**确定性归一化公式分隔符**（`$$...$$`/`\(...\)`/`\[...\]` → `$...$`，`tools/markdown_tools.py`），不赌模型守 prompt 规则。
 - RAG 管线：文档 → 切分(500字/重叠80) → fastembed(bge-small-zh, dim512) → Chroma(cosine) → top-k 检索。
-- 前端：聊天 + WebSocket 实时进度 + 报告下载 + 数学公式渲染。
+- 前端：聊天 + WebSocket 实时进度 + 报告下载 + 数学公式渲染 + **人工审批**（HITL）。
 - 依赖模型：DeepSeek（`deepseek-chat`）+ Tavily。

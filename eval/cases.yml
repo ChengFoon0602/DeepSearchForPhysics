@@ -1,0 +1,29 @@
+# Agent 评测回归语料
+# 每个 case：
+#   id                —— 用例名（--case 过滤用）
+#   query             —— 发给主智能体的任务
+#   expected_subagents —— 必须被调度的子智能体（中文名，子集语义：实际调度集合 ⊇ 此集合）
+#   expect_file       —— 是否预期生成 .md 文件（文件扫描无论真假都会做分隔符检查）
+#   min_internet_search / min_extract —— 全程聚合的工具调用次数下限（深度循环指标）
+#   timeout           —— 单次运行超时（秒）
+cases:
+  - id: compound_pendulum
+    query: "请推导复摆周期公式并解释各符号的物理含义，结合网络资料与本地讲义，整理成一份 Markdown 验证报告。"
+    expected_subagents: ["网络搜索助手", "知识库检索助手"]
+    expect_file: true
+    timeout: 600
+
+  - id: kb_only
+    query: "本地知识库中《学习日记》记录了哪些踩坑排查问题？请用知识库检索工具查询并简要总结其中的排查方法论。"
+    expected_subagents: ["知识库检索助手"]
+    expect_file: false
+    timeout: 600
+
+  - id: deep_research
+    query: "暗物质粒子候选（WIMP、轴子、原初黑洞）的最新观测约束与争议，请做一份带来源引用的 Markdown 调研综述。"
+    expected_subagents: ["网络搜索助手", "物理文献与公式验证助手"]
+    expect_file: true
+    deep_research: true   # 显式开启深度调研模式（否则默认浅层单轮，不会精读）
+    min_internet_search: 2
+    min_extract: 1
+    timeout: 900

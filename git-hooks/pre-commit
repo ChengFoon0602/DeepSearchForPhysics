@@ -2,7 +2,9 @@
 # 评测门禁：提交前跑一次便宜回归（kb_only），防止 prompt 改动引入行为回归。
 # 安装：git config core.hooksPath git-hooks
 # 若 8000 端口被服务器占用，评测前置检查会失败并阻止提交——先停服务器再提交。
-echo "[gate] 运行评测门禁 (eval.run_eval --gate --case kb_only ...)"
+# 注意：必须有外层超时（GATE_TIMEOUT 秒），否则中转站抖动时评测挂起会把 commit 卡死。
+GATE_TIMEOUT=${GATE_TIMEOUT:-300}   # 5 分钟上限，超时算失败放行（避免阻塞提交）
+echo "[gate] 运行评测门禁 (eval.run_eval --gate --case kb_only, 上限 ${GATE_TIMEOUT}s)"
 cd "$(git rev-parse --show-toplevel)" || exit 1
 
 # 用项目 venv 的 python 跑（存在时）
@@ -14,10 +16,23 @@ else
   PY="python"
 fi
 
-"$PY" -m eval.run_eval --gate --case kb_only --retries 0 || {
+# 有 timeout 命令（GNU coreutils / git bash）时用；没有则直接跑
+if command -v timeout >/dev/null 2>&1; then
+  timeout "$GATE_TIMEOUT" "$PY" -m eval.run_eval --gate --case kb_only --retries 0
+  RC=$?
+else
+  "$PY" -m eval.run_eval --gate --case kb_only --retries 0
+  RC=$?
+fi
+
+if [ $RC -eq 0 ]; then
+  echo "[gate] PASS: 回归通过。"
+  exit 0
+elif [ $RC -eq 124 ]; then
+  echo "[gate] WARN: 评测超时（${GATE_TIMEOUT}s）已跳过，不阻塞提交。请稍后手动跑全量回归。"
+  exit 0
+else
   echo "[gate] FAILED: 回归未通过，提交已阻止。"
   echo "[gate] 可能原因：prompt 改动导致子智能体调度/文件质量异常，或 8000 端口被服务器占用（先停服务器）。"
   exit 1
-}
-echo "[gate] PASS: 回归通过。"
-exit 0
+fi

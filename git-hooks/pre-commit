@@ -1,0 +1,23 @@
+#!/bin/sh
+# 评测门禁：提交前跑一次便宜回归（kb_only），防止 prompt 改动引入行为回归。
+# 安装：git config core.hooksPath git-hooks
+# 若 8000 端口被服务器占用，评测前置检查会失败并阻止提交——先停服务器再提交。
+echo "[gate] 运行评测门禁 (eval.run_eval --gate --case kb_only ...)"
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+# 用项目 venv 的 python 跑（存在时）
+if [ -x ".venv/Scripts/python.exe" ]; then
+  PY=".venv/Scripts/python.exe"
+elif [ -x ".venv/bin/python" ]; then
+  PY=".venv/bin/python"
+else
+  PY="python"
+fi
+
+"$PY" -m eval.run_eval --gate --case kb_only --retries 0 || {
+  echo "[gate] FAILED: 回归未通过，提交已阻止。"
+  echo "[gate] 可能原因：prompt 改动导致子智能体调度/文件质量异常，或 8000 端口被服务器占用（先停服务器）。"
+  exit 1
+}
+echo "[gate] PASS: 回归通过。"
+exit 0

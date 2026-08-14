@@ -10,6 +10,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 # main_agent tool导入
 from tools.markdown_tools import generate_markdown
 from tools.pdf_tools import convert_md_to_pdf
+from tools.docx_tools import generate_docx
 from tools.upload_file_read_tool import read_file_content
 
 from deepagents import create_deep_agent
@@ -87,7 +88,7 @@ async def get_main_agent():
                 _main_agent = create_deep_agent(
                     model=model,
                     system_prompt=main_agent_content['system_prompt'],
-                    tools=[generate_markdown, convert_md_to_pdf, read_file_content],
+                    tools=[generate_markdown, convert_md_to_pdf, generate_docx, read_file_content],
                     checkpointer=AsyncSqliteSaver(conn),
                     interrupt_on={
                         "generate_markdown": {
@@ -215,11 +216,29 @@ async def run_deep_agent(task_query, session_id, deep_research=False, auto_appro
         }
 
         # 多段执行：generate_markdown 前会中断（HITL），中断后等审批再 resume，直到正常结束
+        # stream_mode=["updates","messages"]：updates 是节点级（子智能体调度/HITL/最终结果），
+        # messages 是 token 级（主智能体最终回答的逐字输出，供前端流式显示）
         while True:
             interrupted = None  # 本轮是否发生审批中断
-            async for chunk in agent.astream(graph_input, config=config):
-                # {"model [大模型决定调用工具 子智能体  最终结果] / tools" : {messages:[xxx...]}}
-                for node_name, state in chunk.items():
+            reasoning_sent = False  # 每个 model 输出只发一次完整思考，避免重复
+            async for mode, payload in agent.astream(
+                graph_input, config=config, stream_mode=["updates", "messages"]
+            ):
+                if mode == "messages":
+                    # token 级：主智能体（model 节点）的思考 + 正文分开透出
+                    chunk, meta = payload
+                    if meta.get("langgraph_node") != "model":
+                        continue
+                    reasoning = chunk.additional_kwargs.get("reasoning_content")
+                    if reasoning and not reasoning_sent:
+                        monitor.report_stream_reasoning(reasoning)
+                        reasoning_sent = True
+                    if chunk.content and not getattr(chunk, "tool_calls", None):
+                        monitor.report_stream_chunk(chunk.content)
+                    continue
+
+                # updates 级：节点状态（含 __interrupt__ / 子智能体调度 / 最终结果）
+                for node_name, state in payload.items():
                     if node_name == "__interrupt__":
                         # HITL 中断：state[0].value 是 HITLRequest（含待审工具调用的 name/args/description）
                         interrupted = state[0].value

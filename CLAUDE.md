@@ -57,6 +57,7 @@ python -m eval.run_eval              # 全量（3 case）
 python -m eval.run_eval --case kb_only   # 只跑单个 case
 python -m eval.run_eval --retries 2      # 失败重试 2 次
 python -m eval.run_eval --clean          # 清理通过 case 的 session 目录
+python -m eval.run_eval --gate           # 门禁模式：便宜 case（默认 kb_only）+ retries 0
 ```
 
 - **要求**：先停服务器（评测和 server 共用 `output/checkpoints.sqlite`），前置检查会拒绝 8000 端口占用。
@@ -64,6 +65,7 @@ python -m eval.run_eval --clean          # 清理通过 case 的 session 目录
 - **退出码**：0 全过 / 1 有失败 / 2 前置失败或超时。超时会终止整个进程（共享 checkpointer 连接可能脏）。
 - **语料**：`eval/cases.yml`（compound_pendulum 守"网络搜索不被跳过 + 无 `$$`"、kb_only 守知识库、deep_research 守深度检索循环）。
 - 模型行为是概率性的，断言用**子集语义** + 失败重试一次兜底。
+- **评测门禁（git hook）**：`git config core.hooksPath git-hooks` 启用 pre-commit hook——每次提交自动跑 `eval.run_eval --gate`（kb_only 便宜 case），prompt 改动防回归。服务器在跑时 hook 会因 8000 端口占用而拦截提交，先停服务器。
 
 ## 已知坑（速查）
 

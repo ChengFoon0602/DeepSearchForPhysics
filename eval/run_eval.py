@@ -202,7 +202,14 @@ def main():
     parser.add_argument("--case", help="只跑指定 case id")
     parser.add_argument("--retries", type=int, default=1, help="失败重试次数（默认 1）")
     parser.add_argument("--clean", action="store_true", help="清理通过 case 的 session 目录")
+    parser.add_argument("--gate", action="store_true", help="门禁模式：只跑便宜 case（--case 指定，默认 kb_only）、retries 0，供 git hook 调用")
     args = parser.parse_args()
+
+    # 门禁模式：降级为单个便宜 case + 不重试，快速判断"prompt 改动是否引入回归"
+    if args.gate:
+        if not args.case:
+            args.case = "kb_only"
+        args.retries = 0
 
     check_preconditions()
 

@@ -113,6 +113,14 @@ class ToolMonitor:
         """报告任务最终结果"""
         self._emit("task_result", "任务执行完成", {"result": result})
 
+    def report_stream_chunk(self, text: str):
+        """主智能体最终回答的 token 级流式输出（前端逐字显示）"""
+        self._emit("stream_chunk", "", {"text": text})
+
+    def report_stream_reasoning(self, text: str):
+        """主智能体思考过程（reasoning_content）逐字输出（前端「思考中」块）"""
+        self._emit("stream_reasoning", "", {"text": text})
+
     def report_session_dir(self, path: str):
         """报告任务工作目录"""
         self._emit("session_created", f"工作目录已创建: {path}", {"path": path})

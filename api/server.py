@@ -219,6 +219,49 @@ async def list_files(path: str):
     return {"files": files}
 
 
+@app.get("/api/sessions")
+async def list_sessions():
+    """
+    会话历史列表接口 (Session History)。
+
+    扫描 output/session_* 目录，按修改时间倒序返回每个会话的摘要（首个文件 + 文件数）。
+    供前端「历史会话」侧边栏回看旧报告。
+    """
+    if not output_dir.exists():
+        return {"sessions": []}
+
+    sessions = []
+    for d in sorted(output_dir.glob("session_*"), key=lambda p: p.stat().st_mtime, reverse=True):
+        if not d.is_dir():
+            continue
+        try:
+            mtime = d.stat().st_mtime
+            # 列该目录下的文件（不递归，只列直接报告）
+            dir_files = sorted(d.glob("*.md")) + sorted(d.glob("*.pdf")) + sorted(d.glob("*.docx"))
+            file_list = []
+            for f in dir_files:
+                stat = f.stat()
+                file_list.append({
+                    "name": f.name,
+                    "path": str(f),
+                    "size": stat.st_size,
+                    "mtime": stat.st_mtime,
+                })
+            sessions.append({
+                "dir_name": d.name,
+                "path": str(d),
+                "mtime": mtime,
+                "file_count": len(file_list),
+                "first_file": file_list[0]["name"] if file_list else None,
+                "files": file_list,
+            })
+        except Exception as e:
+            print(f"[ERROR] 会话目录解析失败 {d}: {e}")
+            continue
+
+    return {"sessions": sessions}
+
+
 # 当浏览器请求 ws://localhost:8000/ws/thread_123 时：
 # 1. 路由匹配 ：FastAPI 发现这个 URL 匹配了你写的 @app.websocket("/ws/{thread_id}") 。
 # 2. 创建对象 ：FastAPI (基于 Starlette) 会立刻在 主事件循环 中实例化一个 WebSocket 对象。

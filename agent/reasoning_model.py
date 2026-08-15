@@ -25,6 +25,14 @@ class ReasoningChatModel(ChatOpenAI):
     覆盖 _stream/_astream：raw SSE 解析，正文→content，思考→additional_kwargs。
     """
 
+    def __init__(self, *args, **kwargs):
+        # base_url 可能不带 /v1（.env 的 OPENAI_BASE_URL=https://api.ccfuck.me）。
+        # 若缺，先补 /v1 再初始化：这样 openai SDK 的非流式 _generate 和我们的
+        # _sse_request 都请求到正确的 /v1/chat/completions，而不是根路径（返回 HTML）。
+        if kwargs.get("base_url") and not str(kwargs["base_url"]).rstrip("/").endswith("/v1"):
+            kwargs["base_url"] = str(kwargs["base_url"]).rstrip("/") + "/v1"
+        super().__init__(*args, **kwargs)
+
     def _sse_request(self, payload: dict):
         """发原始流式请求，逐 chunk yield 解析后的 dict。"""
         api_key = getattr(self, "openai_api_key", None)

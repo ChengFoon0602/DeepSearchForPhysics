@@ -24,9 +24,10 @@ sys.path.insert(0, str(ROOT))  # 兼容 `python eval/run_eval.py` 直接跑
 from dotenv import load_dotenv
 load_dotenv(ROOT / ".env")
 
-# internet_search / extract_web_content 的 monitor 埋点名（tavily_tool.py 里写死的中文标签）
+# internet_search / extract_web_content / verify_citations 的 monitor 埋点名（对应工具文件里写死的中文标签）
 TOOL_LABEL_SEARCH = "网络搜索工具"
 TOOL_LABEL_EXTRACT = "网页内容精读工具"
+TOOL_LABEL_VERIFY = "引用校验工具"
 # 外部渲染器（Typora 等）不认的分隔符，生成文件里一律禁止
 FORBIDDEN_DELIMITERS = ["$$", r"\(", r"\["]
 
@@ -161,6 +162,22 @@ def check_case(case, thread_id, rec):
         failures.append(
             f"extract 次数不足: {labels.count(TOOL_LABEL_EXTRACT)} < {case['min_extract']}"
         )
+    if "min_verify" in case and labels.count(TOOL_LABEL_VERIFY) < case["min_verify"]:
+        failures.append(
+            f"verify_citations 次数不足: {labels.count(TOOL_LABEL_VERIFY)} < {case['min_verify']}"
+        )
+
+    # 3.5 分阶段协作顺序断言（可选）：order_assert 形如 [[助手A, 助手B], ...]，
+    #     断言 A 的调度时间戳字典序早于 B（rec.assistants 是追加序 = 调度序）。
+    if "order_assert" in case:
+        pos = {name: i for i, name in enumerate(rec.assistants)}
+        for first, second in case["order_assert"]:
+            if first not in pos:
+                failures.append(f"顺序断言失败: 未调度 {first}")
+            elif second not in pos:
+                failures.append(f"顺序断言失败: 未调度 {second}")
+            elif pos[first] >= pos[second]:
+                failures.append(f"顺序断言失败: {first} 应先于 {second} 被调度")
 
     # 4. 执行期错误（DeepSeek 断连 / 图异常，run_deep_agent 会静默吞掉）
     if rec.errors:

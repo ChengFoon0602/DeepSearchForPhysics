@@ -1,10 +1,11 @@
 from agent.prompts import sub_agents_content
 from tools.tavily_tool import internet_search, extract_web_content
+from tools.verify_citations_tool import verify_citations
 
 
 physics_lit_agent = {
     "name": sub_agents_content['physics_lit']['name'],
     "description": sub_agents_content['physics_lit']['description'],
     "system_prompt": sub_agents_content['physics_lit']['system_prompt'],
-    "tools": [internet_search, extract_web_content]
+    "tools": [internet_search, extract_web_content, verify_citations]
 }

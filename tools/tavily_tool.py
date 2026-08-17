@@ -9,6 +9,7 @@ from tavily import TavilyClient
 
 # 系统/第三方依赖
 import os  # 系统路径/环境变量处理
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dotenv import load_dotenv  # 加载 .env 文件中的环境变量
 
 # 自定义模块：工具调用埋点监控（需确保 api 模块可导入）
@@ -21,6 +22,10 @@ load_dotenv()
 
 # 步骤1： 定义一个TavilyClient对象
 tavily_client = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
+
+# 网络请求硬超时（秒）：Tavily SDK 的 search() 是同步阻塞且默认无超时，
+# 在 LangGraph 事件循环里调用会占死 to_thread 线程 → 评测/agent 卡死（2026-08-17）
+_SEARCH_TIMEOUT = 15
 
 
 # 步骤2： 定义一个网络搜索工具
@@ -46,8 +51,17 @@ def internet_search(
                         args={"query": query, "topic": topic, "max_results": max_results,
                               "include_raw_content": include_raw_content})
 
-    return tavily_client.search(query = query, topic =  topic,
-                                max_results = max_results, include_raw_content = include_raw_content)
+    # Tavily SDK search() 是同步阻塞，包线程 + 硬超时 _SEARCH_TIMEOUT 秒：
+    # 防止网络黑洞把它占死线程（LangGraph to_thread 卡死评测的根因，见 verify_citations）。
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(
+            tavily_client.search, query=query, topic=topic,
+            max_results=max_results, include_raw_content=include_raw_content)
+        try:
+            return fut.result(timeout=_SEARCH_TIMEOUT)
+        except FutureTimeout:
+            return {"results": [], "timeout": True,
+                    "warning": f"网络搜索超时（>{_SEARCH_TIMEOUT}s），已空返回"}
 
 
 # 步骤3： 定义一个网页内容精读工具（深度检索循环的"精读"环节）
@@ -72,15 +86,23 @@ def extract_web_content(
     if not url_list:
         return "错误：未提供有效的 URL 列表。"
 
+    # Tavily SDK 的 extract() 是同步阻塞、timeout=30 不保证生效——包线程 + 硬超时，
+    # 防止黑洞 URL 占死线程（LangGraph to_thread 卡死评测的根因，同 internet_search）。
     try:
-        resp = tavily_client.extract(
-            urls=url_list,
-            query=query or None,
-            chunks_per_source=max(1, min(chunks_per_source, 5)),
-            extract_depth="advanced",
-            format="markdown",
-            timeout=30,
-        )
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            fut = pool.submit(
+                tavily_client.extract,
+                urls=url_list,
+                query=query or None,
+                chunks_per_source=max(1, min(chunks_per_source, 5)),
+                extract_depth="advanced",
+                format="markdown",
+                timeout=30,
+            )
+            try:
+                resp = fut.result(timeout=30)
+            except FutureTimeout:
+                return f"[超时] 网页内容精读超过 30s，已放弃（URLs: {', '.join(url_list)}）"
     except Exception as e:
         return f"网页内容精读失败：{e}"
 

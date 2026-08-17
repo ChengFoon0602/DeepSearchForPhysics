@@ -17,7 +17,7 @@ cases:
     query: "本地知识库中《学习日记》记录了哪些踩坑排查问题？请用知识库检索工具查询并简要总结其中的排查方法论。"
     expected_subagents: ["知识库检索助手"]
     expect_file: false
-    timeout: 600
+    timeout: 300
 
   - id: deep_research
     query: "暗物质粒子候选（WIMP、轴子、原初黑洞）的最新观测约束与争议，请做一份带来源引用的 Markdown 调研综述。"
@@ -26,7 +26,7 @@ cases:
     deep_research: true   # 显式开启深度调研模式（否则默认浅层单轮，不会精读）
     min_internet_search: 2
     min_extract: 1
-    timeout: 900
+    timeout: 600
 
   - id: citation_check
     query: "量子纠缠中贝尔不等式违反的观测证据，请列出科学上可信的来源（给出真实 URL）并做一份带来源引用的 Markdown 调研总结。"

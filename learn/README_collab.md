@@ -49,3 +49,17 @@ python learn/run_collab.py
 ```
 
 自检断言：两阶段子图依次执行、阶段消息含复摆/周期内容（PASS）。
+
+## 为什么真工具会卡死（踩坑，库在 learn 里）
+
+**同步 httpx / requests 在 LangGraph 事件循环里 = 死锁**。`astream`/`to_thread`
+把工具的同步 `func` 丢线程池执行，主事件循环轮询线程结果 —— 同步阻塞不放，
+主循环死等（连 `asyncio.wait_for` 超时都触发不了，因为它挂在同一条循环）。
+2026-08-17 实测：`verify_citations` 用同步 `httpx.Client(follow_redirects=True)`
+对 arxiv 这类站点叠重定向超时，评测卡死 1.5 小时，整个进程杀不掉。
+
+正确姿势（`tools/verify_citations_tool.py` 已修复）：
+- **硬超时壳**：每个 URL 探活包进 `ThreadPoolExecutor` + `future.result(timeout=6)`，
+  超时判 ❌（线程会被弃但不会阻塞主循环调度）。
+- **连接/读/写全部压到 1.5s**：黑洞地址（连不上）在 ~1.5s 失败，而不是顶满默认 5s。
+- **工具永不抛异常**：校验失败 = 不可信，返回状态即可，不打断 agent 流程。

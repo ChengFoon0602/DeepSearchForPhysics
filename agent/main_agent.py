@@ -262,7 +262,13 @@ async def run_deep_agent(task_query, session_id, deep_research=False, auto_appro
                                     """
                                     if tool_call['name'] == 'task':
                                         # 调用某个子智能体
-                                        monitor.report_assistant(tool_call['args']['subagent_type'],{'description':tool_call['args']['description']})
+                                        # 容错：模型偶发缺 subagent_type/description（2026-08-17 评测见过
+                                        # 'subagent_type' KeyError），缺键时跳过埋点，不让流式解析崩掉。
+                                        args = tool_call.get('args') or {}
+                                        stype = args.get('subagent_type')
+                                        desc = args.get('description', '')
+                                        if stype:
+                                            monitor.report_assistant(stype, {'description': desc})
                             elif last_msg.content:
                                 # 最终结果
                                 print(f"主智能体执行结果，最终结果：{last_msg.content[:100]}")
